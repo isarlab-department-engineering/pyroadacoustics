@@ -186,9 +186,14 @@ class SimulatorManager:
             for j in range(1,int(L_air/2 + 1)):
                 A[i,j] = 2 * math.cos(w[i] * j)
         self._pseud_A = np.linalg.inv(A.T.dot(A)).dot(A.T)
-        
 
-    def initialize(self, src_traj: np.ndarray, mic_pos: np.ndarray, mic_orientation: float, mic_dir_pattern: str, src_orientation: float, src_dir_pattern: str) -> None:
+    def initialize(self,
+                   src_traj: np.ndarray,
+                   mic_pos: np.ndarray,
+                   mic_orientation: float,
+                   mic_dir_pattern: str,
+                   src_orientation: float,
+                   src_dir_pattern: str) -> None:
         """
         Computes the propagation delays along the paths:
         * Direct path from source initial position to microphone

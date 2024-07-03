@@ -1,3 +1,5 @@
+import copy
+
 import numpy as np
 
 class SoundSource:
@@ -36,12 +38,11 @@ class SoundSource:
 
     def __init__(
             self,
-            position = np.array([0,0,1]),
-            dir_pattern = 'omnidirectional',
-            orientation = 0,
-            fs = 8000,
-            is_static = True,
-            static_simduration = 5
+            position=np.array([0., 0., 1.]),
+            dir_pattern='omnidirectional',
+            orientation=0,
+            fs=8000,
+            update_fs=20
         ) -> None:
         """
         Create SoundSource object by defining its initial position, trajectory, 
@@ -70,13 +71,32 @@ class SoundSource:
         self.src_orientation = orientation
         self.signal = None
         self.fs = fs
-        self.is_static = is_static
-        self.static_simduration = static_simduration
-        if self.is_static:
-            # If duration is zero, consider single sample
-            if self.static_simduration == 0:
-                self.static_simduration = 1 / self.fs
-            self.trajectory = np.tile(self.position, (round(self.fs * self.static_simduration), 1))
+        self.update_fs = update_fs
+        self.signal_interval = int(self.fs / self.update_fs)
+        self.current_index = 0
+        trajectory_count = self.fs / self.update_fs
+        self.trajectory = np.tile(self.position, (round(trajectory_count), 1))
+
+    def set_source_index(self, new_index: int):
+        self.current_index = copy.deepcopy(new_index)
+
+    def get_source_index(self):
+        return copy.deepcopy(self.current_index)
+
+    def increase_source_index(self):
+        self.current_index = self.current_index + self.signal_interval
+
+    def extract_current_interval(self, start_index, update_index=False) -> np.ndarray:
+        n = len(self.signal)
+
+        end_index = start_index + self.signal_interval
+
+        if update_index:
+            self.current_index = end_index
+
+        return np.concatenate([self.signal[start_index:min(end_index, n)], self.signal[:max(end_index - n, 0)]])
+
+
         
     def set_signal(self, signal: np.ndarray) -> None:
         """
@@ -88,24 +108,57 @@ class SoundSource:
             1D Array containing samples of the source signal
         """
         self.signal = signal
-    def set_trajectory(self, positions: np.ndarray, speed: np.ndarray) -> np.ndarray:
+    # def set_trajectory(self, trajectory: np.ndarray) -> np.ndarray:
+    #     """
+    #     Defines a trajectory for the sound source from a set of N positions.
+    #
+    #     Parameters
+    #     ----------
+    #     positions : ndarray
+    #         2D Array containing N sets of 3 cartesian coordinates `[x,y,z]` defining the desired trajectory positions.
+    #         Each couple of subsequent points define a straight segment on the overall trajectory
+    #
+    #     Returns
+    #     -------
+    #     trajectory: ndarray
+    #         2D Array containing N' sets of 3 cartesian coordinates `[x,y,z]` defining the full sampled trajectory
+    #
+    #     Raises
+    #     ------
+    #     RuntimeError
+    #         if 'trajectory' is assigned to a static source
+    #     RuntimeError
+    #         if yhe length of trajectory do not match the interval between two update_fs points
+    #
+    #     Modifies
+    #     --------
+    #     trajectory
+    #         Parameter is updated with the new computed trajectory
+    #
+    #     """
+    #
+    #     if self.is_static:
+    #         raise RuntimeError("Cannot assign trajectory to static source")
+    #
+    #     if len(trajectory) == self.fs / self.update_fs:
+    #         self.trajectory = trajectory
+    #         self.position = self.trajectory[-1]
+    #     else:
+    #         raise RuntimeError("Length of the trajectory is {} while it must be {}".format(len(trajectory),
+    #                                                                                        self.fs / self.update_fs))
+    #     return trajectory
+
+    def set_trajectory(self, new_position: np.ndarray = None) -> np.ndarray:
         """
-        Defines a trajectory for the sound source from a set of N positions (given as triplets of cartesian
-        coordinates) and the values of the modulus of the source velocity between each subsequent couple of positions.
+        Defines a trajectory for the sound source from the current position to the new one.
         The trajectory is defined as the positions covered by the sound source at each sample of the simulation.
-        Therefore, given the N input points, the method first computes a set of N-1 segments connecting one point to 
-        the following one. Then, each segment is sampled according to the speed of the source in that segment and
-        the signal sampling frequency, to yield a series of points so that each signal sample is emitted by the
-        source at a different position on the trajectory.
+        Therefore, given the first and the last points, the method first computes a set of N-1 interpolation points
+        connecting the two positions.
 
         Parameters
         ----------
-        positions : ndarray
-            2D Array containing N sets of 3 cartesian coordinates `[x,y,z]` defining the desired trajectory positions.
-            Each couple of subsequent points define a straight segment on the overall trajectory
-        speed : ndarray or float
-            * 2D Array containing N-1 floats defining the modulus of the velocity on each trajectory segment
-            * float defining the modulus of the velocity on the whole trajectory (i.e. constant speed)
+        new_position : ndarray
+            Array containing the 3 cartesian coordinates `[x,y,z]` defining the new position of the source.
 
         Returns
         -------
@@ -114,10 +167,8 @@ class SoundSource:
 
         Raises
         ------
-        ValueError
-            If `speed` is neither a `float` nor a `ndarray` so that `len(speed) != (np.shape(positions)[0] - 1)`
-        ValueError
-            If `speed` is 0 or speed array contains value 0
+        RuntimeError
+            if a trajectory is assigned to a static source
 
         Modifies
         --------
@@ -126,40 +177,20 @@ class SoundSource:
 
         """
 
-        if self.is_static:
-            raise RuntimeError("Cannot assign trajectory to static source")
+        # Number of samples of the trajectory
+        trajectory_count = round(self.fs / self.update_fs)
 
-        trajectory = np.empty((0,3), dtype = np.float64)
-        if len(speed) != (np.shape(positions)[0] - 1):
-            if(len(speed) != 1):
-                raise ValueError('Speed must be a float or an array with len(speed) = np.shape(positions)[0] - 1!')
-            else:
-                # Tile the speed value to cover the whole set of segments
-                speed = np.tile(speed, np.shape(positions)[0] - 1)
-        if 0 in speed:
-            raise ValueError("Speed cannot be zero")
-        
-        for i in range(1, np.shape(positions)[0]):
-            # Extremes of the considered segment
-            a = positions[i - 1]
-            b = positions[i]
+        if new_position is None or np.array_equal(new_position, self.position):
+            self.trajectory = np.tile(self.position, (trajectory_count, 1))
+        else:
+            # Create a new array with N points for each dimension
+            trajectory = np.zeros((trajectory_count, 3))
 
-            # Direction defining segment passing for a and b
-            direction = b - a
-            direction = direction / np.linalg.norm(direction)
+            # For each dimension...
+            for i in range(3):
+                # ...use linspace to create N evenly spaced values between the start and end points
+                trajectory[:, i] = np.linspace(self.position[i], new_position[i], trajectory_count, endpoint=False)
+            self.position = copy.deepcopy(new_position)
+            self.trajectory = copy.deepcopy(trajectory)
 
-            len_segment = np.sqrt(np.sum((a-b)**2))             # Compute length of segment A,B
-            t_segment = len_segment / speed[i-1]                # Time to go from A to B (seconds)
-            samples_segment = round(t_segment * self.fs -1)     # Number of samples to go from A to B
-
-            # Positions on segment at each sample
-            segment_positions = len_segment / samples_segment * range(samples_segment)
-            segment_positions = segment_positions.reshape(-1,1)
-           
-            segment_positions = np.tile(a,(len(segment_positions), 1)) + segment_positions * direction
-            trajectory = np.append(trajectory, segment_positions, axis = 0)
-        
-        trajectory = np.append(trajectory, np.reshape(positions[-1], (1,3)), axis = 0)
-        self.trajectory = trajectory
-
-        return trajectory
+        return self.trajectory
