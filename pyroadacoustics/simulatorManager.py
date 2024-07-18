@@ -81,6 +81,7 @@ class SimulatorManager:
             self,
             c: float,                                   # speed of sound in air 
             fs: int,                                    # sampling frequency
+            fs_update: int,                             # sampling frequency for update control
             Z0: int,                                    # characteristic impedance of air
             road_material: Union[Material, int],        # Absorption properties of road surface
             airAbsorptionCoefficients: np.ndarray,
@@ -127,6 +128,7 @@ class SimulatorManager:
         """
         self.c = c
         self.fs = fs
+        self.fs_update = fs_update
         self.Z0 = Z0
         self.road_material = road_material
         self.airAbsorptionCoefficients = airAbsorptionCoefficients
@@ -139,9 +141,9 @@ class SimulatorManager:
         self.simulation_params = simulation_params
 
         # Instantiation of two delay lines used for the simulations
-        self.primaryDelLine = DelayLine(N = 48000, num_read_ptrs = 2, 
+        self.primaryDelLine = DelayLine(N = 48000, shape_read_ptrs=(2, int(self.fs / self.fs_update)),
             interpolation = self.simulation_params["interp_method"]) 
-        self.secondaryDelLine = DelayLine(N = 48000, num_read_ptrs = 1, 
+        self.secondaryDelLine = DelayLine(N = 48000, shape_read_ptrs=(2, int(self.fs / self.fs_update)),
             interpolation = self.simulation_params["interp_method"])
 
         # Array containing all possible incidence angles for pre-computed reflection filter table
@@ -307,11 +309,17 @@ class SimulatorManager:
         mic_dir_factor = self._compute_mic_dir_factor(src_pos, mic_pos, d, self.mic_orientation_vector, self.mic_dir_pattern)
 
         # Compute distance and delay between src and reflection point
-        a = src_pos[2] / math.sin(theta)
+        if src_pos.ndim == 1:
+            a = src_pos[2] / np.sin(theta)
+        else:
+            a = src_pos[:, 2] / np.sin(theta)
         tau_1 = a / self.c
         
         # Compute distance between reflection point and microphone
-        b = mic_pos[2] / math.sin(theta)
+        if src_pos.ndim == 1:
+            b = mic_pos[2] / np.sin(theta)
+        else:
+            b = mic_pos[:, 2] / np.sin(theta)
         tau_2 = b / self.c
 
         # Compute source directivity attenuation
@@ -538,8 +546,11 @@ class SimulatorManager:
         Tuple[float, float]
             Tuple containing the distance between source and microphone (in meters) and the time delay (in seconds)
         """
-
-        d = math.sqrt(np.sum((src_pos - mic_pos) ** 2))
+        if src_pos.ndim == 1:
+            d = np.sqrt(np.sum((src_pos - mic_pos) ** 2))
+        else:
+            d = np.sqrt(np.sum((src_pos - mic_pos) ** 2, axis=1))
+        # d = np.sqrt(np.sum((src_pos - mic_pos) ** 2, axis=0))
         tau = d / self.c
         return d, tau
     
@@ -562,9 +573,23 @@ class SimulatorManager:
         """
 
         # Distance between image and microphone
-        dist = math.sqrt(np.sum(((src_pos - np.array([0, 0 , 2*src_pos[2]])) - mic_pos) ** 2))
+        input_array = np.zeros_like(src_pos)
+        # If the input array is 1D
+        if input_array.ndim == 1:
+            input_array[2] = src_pos[2] * 2
+        # If the input array is 2D
+        elif input_array.ndim == 2:
+            input_array[:, 2] = src_pos[:, 2] * 2
+        else:
+            raise ValueError("Input array must be either 1D or 2D")
+
+        dist = np.sqrt(np.sum(((src_pos - input_array) - mic_pos) ** 2))
+
         # Incidence angle
-        theta = math.asin((src_pos[2] + mic_pos[2]) / dist)
+        if input_array.ndim == 1:
+            theta = np.arcsin((src_pos[2] + mic_pos[2]) / dist)
+        else:
+            theta = np.arcsin((src_pos[:, 2] + mic_pos[:, 2]) / dist)
         return theta
     
     def _compute_mic_dir_factor(self, src_pos: np.ndarray, mic_pos: np.ndarray, distance: float, orientation: np.ndarray, dir_pattern: str) -> float:

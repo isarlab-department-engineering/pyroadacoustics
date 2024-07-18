@@ -1,4 +1,5 @@
 import copy
+import time
 
 from pyroadacoustics.pyroadacoustics.environment import Environment
 from pyroadacoustics.pyroadacoustics.soundSource import SoundSource
@@ -22,8 +23,8 @@ if __name__ == "__main__":
     rel_humidity = 50
     simulation_params: dict = {
                 "interp_method": "Sinc",
-                "include_reflected_path": True,
-                "include_air_absorption": True,
+                "include_reflected_path": False,
+                "include_air_absorption": False,
         }
     env = Environment(fs=fs,
                       fs_update=fs_control,
@@ -68,6 +69,7 @@ if __name__ == "__main__":
     vel = 30.0  # m/s
     signals = None
     new_position = copy.deepcopy(env.source.position)
+    start_t = time.time()
     while elapsed_time < T:
         new_position[1] -= vel * ts
         env.move_source(new_position)
@@ -78,7 +80,7 @@ if __name__ == "__main__":
             signals = np.concatenate([signals, curr_signals], axis=1)
         # env.source.position = copy.deepcopy(new_position)
         elapsed_time += ts
-
+    print("Simulation time: {} s - Real time elapsed: {:.2f} s".format(T, time.time() - start_t))
     # plot signals received at the 3 microphones
     fig, ax = plt.subplots(3, 1)
     ax[0].plot(t[:len(signals[0, :])], signals[0, :])

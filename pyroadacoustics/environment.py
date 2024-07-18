@@ -397,6 +397,7 @@ class Environment:
             self.manager_array.append(
                 SimulatorManager(c=self.c,
                                  fs=self.fs,
+                                 fs_update=self.fs_update,
                                  Z0=self.Z0,
                                  road_material=self.road_material,
                                  airAbsorptionCoefficients=self.air_absorption_coefficients,
@@ -410,9 +411,10 @@ class Environment:
         """
 
         plt.figure()
-        plt.plot(self.source.trajectory[:,0], self.source.trajectory[:,1])
+        # plt.plot(self.source.trajectory[:,0], self.source.trajectory[:,1])
+        plt.scatter(self.source.position[0], self.source.position[1], color='red', marker='o')
         plt.scatter(self.mic_array.mic_positions[:,0], self.mic_array.mic_positions[:,1], color = 'green', marker='x')
-        plt.legend(['Source Trajectory', 'Microphones'])
+        plt.legend(['Source', 'Microphones'])
         plt.xlabel('[m]')
         plt.ylabel('[m]')
         plt.suptitle('Simulation Scenario')
@@ -475,8 +477,9 @@ class Environment:
                                                  self.source.dir_pattern)
 
             # Compute output samples
-            for n in range(N):
-                signals[m, n] = self.manager_array[m].update(self.source.trajectory[n], active_mic_pos, current_source_signal[n])
+            # for n in range(N):
+            active_mic_pos_array = np.tile(active_mic_pos, (len(self.source.trajectory), 1))
+            signals[m] = self.manager_array[m].update(self.source.trajectory, active_mic_pos_array, current_source_signal)
 
             # Add background noise
             if self._background_noise_flag:

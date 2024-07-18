@@ -55,7 +55,7 @@ class DelayLine:
     def __init__(
             self, 
             N = 48000,
-            num_read_ptrs = 1,
+            shape_read_ptrs=(1,),
             interpolation = 'Allpass',
         ):
         """
@@ -65,9 +65,9 @@ class DelayLine:
         ----------
         N : int, optional
             Number of samples (i.e. elements) of array defining the delay line, by default 48000
-        num_read_ptrs : int, optional
+        shape_read_ptrs : tuple, optional
             Number of pointers that will read values from the delay line, by default 1. The `write_ptr` attribute
-            will be instantiated as an 1D `ndarray` having num_read_pointers float entries.
+            will be instantiated as an 2D `ndarray` having shape_read_ptrs as shape.
         interpolation : str, optional
             String describing the type of interpolator to be used for fractional delay read operations. Can be:
             * Linear: linear interpolation
@@ -88,7 +88,7 @@ class DelayLine:
 
         if N <= 0:
             raise ValueError("Delay Line size must be greater than zero.")
-        if num_read_ptrs <= 0:
+        if np.sum(shape_read_ptrs) <= 0:
             raise ValueError("Number of read pointers must be greater than zero.")
         if (interpolation != 'Linear' and interpolation != "Lagrange" and
             interpolation != 'Allpass' and interpolation != "Sinc"):
@@ -96,7 +96,7 @@ class DelayLine:
 
         self.N = N
         self.write_ptr = 0
-        self.read_ptr = np.zeros(num_read_ptrs, dtype=float)
+        self.read_ptr = np.zeros(shape_read_ptrs, dtype=float)
         self.delay_line = np.zeros(N)
         self.interpolation = interpolation
 
@@ -139,19 +139,19 @@ class DelayLine:
 
         if np.any(delay <= 0):
             raise ValueError('Delays must be non-negative numbers')
-        if len(delay) != len(self.read_ptr):
-            raise ValueError('Length of delay array should match number of read pointers')
         if np.any(delay >= self.N):
             raise RuntimeError('Delay greater than delay line length has been encountered. Consider'
             'using a longer delay line')
-        
-        for i in range(len(self.read_ptr)):
-            self.read_ptr[i] = self.write_ptr - delay[i]
-            # Check that read pointer value is in [0, N-1]
-            if (self.read_ptr[i] < 0):
-                self.read_ptr[i] += self.N
 
-    def update_delay_line(self, x: float, delay: np.ndarray) -> np.ndarray:
+        m, c = self.read_ptr.shape
+
+        wp_array = np.arange(c)
+        delay = np.expand_dims(delay, axis=1)
+        delay = np.repeat(delay, c, axis=1)
+        wp_array = np.repeat(wp_array[np.newaxis, :], 2, axis=0)
+        self.read_ptr = -delay + (wp_array + self.write_ptr)
+
+    def update_delay_line(self, x: np.ndarray, delay: np.ndarray) -> np.ndarray:
         """
         Writes signal value x on the delay line at the write_ptr position and increments write_ptr by 1.
         Performs an interpolated read operation for each of the read pointers, and updates read pointer values
@@ -173,35 +173,38 @@ class DelayLine:
             values represent the output of the delay line (i.e. a delayed version of the input signal, interpolated
             to take into account fractional values of the delay)
         """
-        
-        # Create array to store output values
-        y = np.zeros(len(self.read_ptr))
-        
-
         # Append input sample at the write pointer position and increment write pointer
-        self.delay_line[self.write_ptr] = x
-        self.write_ptr += 1
+        self.delay_line[self.write_ptr:(self.write_ptr + len(x))] = x
+        self.write_ptr += len(x)
 
-        for i in range(len(self.read_ptr)):
-            # Compute interpolated read position (fractional delay)
-            rpi = int(self.read_ptr[i])
-            frac_del = self.read_ptr[i] - rpi
-        
-            # Produce output with interpolated read
-            y[i] = self._interpolated_read(rpi, frac_del, self.interpolation, i)
+        rpi = np.trunc(self.read_ptr)
+        frac_del = self.read_ptr - rpi
 
-            # Update read pointer position
-            self.read_ptr[i] = self.write_ptr - delay[i]
-            # Check that read and write pointers are within delay line length
-            while (self.read_ptr[i] < 0):
-                self.read_ptr[i] += self.N
-            while (self.write_ptr >= self.N):
-                self.write_ptr -= self.N
-            while (self.read_ptr[i] >= self.N):
-                self.read_ptr[i] -= self.N
+        # Produce output with interpolated read
+        y = self._interpolated_read(rpi, frac_del, self.interpolation)
+
+        # Update read pointer position
+        wp_array = np.arange(len(x))
+        wp_array = np.repeat(wp_array[np.newaxis, :], 2, axis=0)
+        self.read_ptr = -delay + (wp_array + self.write_ptr)
+
+        # Check that read and write pointers are within delay line length
+        to_add = self.read_ptr < 0.
+        while to_add.any():
+            self.read_ptr[to_add] += self.N
+            to_add = self.read_ptr < 0.
+
+        to_subtract = self.read_ptr >= self.N
+        while to_subtract.any():
+            self.read_ptr[to_subtract] -= self.N
+            to_subtract = self.read_ptr >= self.N
+
+        while self.write_ptr >= self.N:
+            self.write_ptr -= self.N
+
         return y
 
-    def _interpolated_read(self, read_ptr_integer: int, d: float, method: str = 'Allpass', rptr_idx: int = 0) -> float:
+    def _interpolated_read(self, read_ptr_integer: np.ndarray, d: np.ndarray, method: str = 'Allpass', rptr_idx: int = 0) -> float:
         """
         Performs interpolated reads from delay line. Read pointer position is given to this function splitted into an
         integer part (`read_ptr_integer`) and a fractional part (`d`) in [0,1]. The interpolation is 
@@ -263,11 +266,16 @@ class DelayLine:
         elif method == 'Sinc':
             # Define windowed sinc filter paramters and compute coefficients
             h_sinc = self._frac_delay_interpolated_sinc(d)
-            
+
             # Convolve signal with filter
-            out = 0
+            out = np.zeros_like(read_ptr_integer)
             for i in range(0, self._SINC_SMP):
-                out = out + h_sinc[i]*self.delay_line[(read_ptr_integer + i - math.floor(self._SINC_SMP/2)) % self.N]
+                indexes = ((read_ptr_integer + i - math.floor(self._SINC_SMP/2)) % self.N).astype(np.int)
+                delay_line = self.delay_line[indexes]
+            # delay_line = np.expand_dims(delay_line, axis=-1)
+            # delay_line = np.repeat(delay_line, repeats=11, axis=-1)
+
+                out = out + (h_sinc[:, :, i] * delay_line)
             return out
 
         else:
@@ -303,7 +311,7 @@ class DelayLine:
             h[index] = h[index] * (delay - k) / (n[index] - k)
         return h
 
-    def _frac_delay_interpolated_sinc(self, delay: float) -> np.ndarray:
+    def _frac_delay_interpolated_sinc(self, delay: np.ndarray) -> np.ndarray:
         """
         Computes windowed sinc FIR filter coefficients for sinc interpolation, using a table lookup and linear
         interpolation. In the initialization of the `DelayLine` component, a sinc table is computed, containing
@@ -325,11 +333,14 @@ class DelayLine:
             Windowed-sinc filter coefficients corresponding to the delay `delay`
         """
         alpha = delay % self._delta
+        alpha_exp = np.expand_dims(alpha, axis=-1)
+        alpha_exp = np.repeat(alpha_exp, repeats=11, axis=-1)
         position = np.searchsorted(self._table_delays, delay - alpha)
-        if alpha < 1e-9:
-            return self._sinc_table[position]
-        else:
-            return alpha * (self._sinc_table[position] - self._sinc_table[position + 1]) + self._sinc_table[position + 1]
+
+        interpolated = np.where(alpha_exp < 1e-9,
+                                self._sinc_table[position],
+                                alpha_exp * (self._sinc_table[position] - self._sinc_table[position + 1]) + self._sinc_table[position + 1])
+        return interpolated
 
     def _frac_delay_sinc(self, sinc_samples: int, sinc_window: np.ndarray, delay: float) -> np.ndarray:
         """
