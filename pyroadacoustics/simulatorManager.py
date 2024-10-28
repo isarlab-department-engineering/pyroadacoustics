@@ -169,7 +169,7 @@ class SimulatorManager:
 
        
         # Buffers to store previous data read from delay lines for filtering purpose
-        self._read1Buf = deque(np.zeros(11), maxlen=11)
+        self._read1Buf = deque(np.zeros((11, int(self.fs / self.fs_update))), maxlen=11)
         self._read2Buf = deque(np.zeros(11), maxlen=11)
         self._read3Buf = deque(np.zeros(n_taps_refl), maxlen=n_taps_refl)
         self._read4Buf = deque(np.zeros(11), maxlen=11)
@@ -341,8 +341,9 @@ class SimulatorManager:
         if self.simulation_params["include_air_absorption"]:
             # Attenuation due to air absorption
             filt_coeffs = self._compute_air_absorption_filter(d, numtaps = 11)
-            rb = np.array(self._read1Buf)
-            sample_eval = filt_coeffs.dot(rb)
+            rb = np.array(self._read1Buf[0])
+            # sample_eval = filt_coeffs.dot(rb)
+            sample_eval = np.sum(filt_coeffs * rb[:, np.newaxis], axis=1)
         else:
             sample_eval = self._read1Buf[0]
         
