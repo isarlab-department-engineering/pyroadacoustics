@@ -341,7 +341,8 @@ class SimulatorManager:
         if self.simulation_params["include_air_absorption"]:
             # Attenuation due to air absorption
             filt_coeffs = self._compute_air_absorption_filter(d, numtaps = 11)
-            sample_eval = filt_coeffs.dot(list(self._read1Buf))
+            rb = np.array(self._read1Buf)
+            sample_eval = filt_coeffs.dot(rb)
         else:
             sample_eval = self._read1Buf[0]
         
@@ -447,7 +448,7 @@ class SimulatorManager:
 
         return y_received
     
-    def _compute_air_absorption_filter(self, distance: float, numtaps: int) -> np.ndarray:
+    def _compute_air_absorption_filter(self, distance: np.ndarray, numtaps: int) -> np.ndarray:
         """
         Computes air absorption filter as a FIR filter with `numtaps` coefficients. The filter depends
         on the distance between the source and the receiver.
@@ -464,10 +465,12 @@ class SimulatorManager:
         np.ndarray
             1D array containing `numtaps` FIR filter coefficients modelling air absorption
         """
-        filt_coeffs = np.empty(numtaps, np.float64)
-        alpha = 10 ** (-self.airAbsorptionCoefficients * distance / 20)     # Convert coeffs in dB to linear scale
-        filt_coeffs[int((numtaps+1)/2)-1:] = self._pseud_A.dot(alpha)
-        filt_coeffs[0:int((numtaps+1)/2)-1] = np.flip(filt_coeffs[int((numtaps+1)/2):])
+        filt_coeffs = np.empty((len(distance), numtaps), np.float64)
+        distance_stack = np.expand_dims(distance, axis=1)
+        distance_stack = np.repeat(distance_stack, len(self.airAbsorptionCoefficients), axis=1)
+        alpha = 10 ** (-self.airAbsorptionCoefficients * distance_stack / 20)     # Convert coeffs in dB to linear scale
+        filt_coeffs[:, int((numtaps+1)/2)-1:] = self._pseud_A.dot(alpha.T).T
+        filt_coeffs[:, 0:int((numtaps+1)/2)-1] = np.flip(filt_coeffs[:, int((numtaps+1)/2):], axis=1)
         
         return filt_coeffs
 

@@ -84,17 +84,18 @@ class SoundSource:
         return copy.deepcopy(self.current_index)
 
     def increase_source_index(self):
-        self.current_index = self.current_index + self.signal_interval
+        self.current_index = (self.current_index + self.signal_interval) % len(self.signal)
 
     def extract_current_interval(self, start_index, update_index=False) -> np.ndarray:
         n = len(self.signal)
 
         end_index = start_index + self.signal_interval
+        output = np.concatenate([self.signal[start_index:min(end_index, n)], self.signal[:max(end_index - n, 0)]])
 
         if update_index:
-            self.current_index = end_index
+            self.current_index = end_index % n
 
-        return np.concatenate([self.signal[start_index:min(end_index, n)], self.signal[:max(end_index - n, 0)]])
+        return output
 
 
         
