@@ -169,10 +169,10 @@ class SimulatorManager:
 
        
         # Buffers to store previous data read from delay lines for filtering purpose
-        self._read1Buf = deque(np.zeros((11, int(self.fs / self.fs_update))), maxlen=11)
-        self._read2Buf = deque(np.zeros(11), maxlen=11)
-        self._read3Buf = deque(np.zeros(n_taps_refl), maxlen=n_taps_refl)
-        self._read4Buf = deque(np.zeros(11), maxlen=11)
+        self._read1Buf = deque(np.zeros((n_taps_refl, int(self.fs / self.fs_update))), maxlen=n_taps_refl)
+        self._read2Buf = deque(np.zeros((n_taps_refl, int(self.fs / self.fs_update))), maxlen=n_taps_refl)
+        self._read3Buf = deque(np.zeros((n_taps_refl, int(self.fs / self.fs_update))), maxlen=n_taps_refl)
+        self._read4Buf = deque(np.zeros((n_taps_refl, int(self.fs / self.fs_update))), maxlen=n_taps_refl)
 
         # Compute air absorption filter 
         freqs = np.linspace(0, self.fs / 2, len(airAbsorptionCoefficients))
@@ -258,7 +258,7 @@ class SimulatorManager:
         self._prev_src_pos = np.array([src_traj[1,0] - 2 * (src_traj[1,0] - src_traj[0,0]), src_traj[1,1] - 2 * (src_traj[1,1] - src_traj[0,1]), src_traj[1,2]])
         self._prev_src_dist, _ = self._compute_delay(self._prev_src_pos, mic_pos)
         
-    def update(self, src_pos: np.ndarray, mic_pos: np.ndarray, signal_sample: float) -> float:
+    def update(self, src_pos: np.ndarray, mic_pos: np.ndarray, signal_sample: np.ndarray) -> np.ndarray:
         """
         This method is used to compute the output of one instant of the simulation. It takes as inputs the instantaneous
         positions of the source and of the microphone used in the current simulation, and the sample of the source
@@ -384,8 +384,10 @@ class SimulatorManager:
             if self.simulation_params["include_air_absorption"]:
 
                 # Attenuation due to air absorption
-                filt_coeffs = self._compute_air_absorption_filter(a, numtaps = 11)
-                sample_eval = filt_coeffs.dot(list(self._read2Buf))
+                filt_coeffs = self._compute_air_absorption_filter(a, numtaps=11)
+                rb = np.array(self._read2Buf[0])
+                # sample_eval = filt_coeffs.dot(rb)
+                sample_eval = np.sum(filt_coeffs * rb[:, np.newaxis], axis=1)
             else:
                 sample_eval = self._read2Buf[0]
             
@@ -397,13 +399,25 @@ class SimulatorManager:
             self._read3Buf.appendleft(sample_eval)
 
             # 2. Asphalt Absorption
-            asphalt_filter_coeffs = self._get_asphalt_reflection_filter(90 - math.degrees(theta), a+b)
+            asphalt_filter_coeffs = self._get_asphalt_reflection_filter(-np.degrees(theta) + 90, a+b)
             
-            sample_eval = asphalt_filter_coeffs.dot(list(self._read3Buf))
+            # sample_eval = asphalt_filter_coeffs.dot(list(self._read3Buf))
+            rb = np.array(self._read3Buf)
+            rb1 = np.concatenate([self._read3Buf[0], self._read3Buf[1]])
+            rb2 = np.lib.stride_tricks.as_strided(
+            np.tile(rb1, 40),
+            shape=(40, len(rb1)),
+            strides=(rb1.itemsize, rb1.itemsize)
+            )
+            rb3 = rb2[:, :400]
+            sample_eval = asphalt_filter_coeffs.dot(rb3)
+            sample_eval = sample_eval.diagonal()
+            # sample_eval = np.sum(asphalt_filter_coeffs * rb[:, np.newaxis], axis=1)
             
             
             # 3. Second path in air --> Secondary Delay Line
-            y_secondary = self.secondaryDelLine.update_delay_line(sample_eval, np.array([tau_2 * self.fs]))
+            y_secondary = self.secondaryDelLine.update_delay_line(sample_eval, np.array([tau * self.fs,
+            tau_2 * self.fs]))
 
             # Store output of secondary delay line in buffer for cascade air abs filter
             self._read4Buf.appendleft(y_secondary[0])
@@ -411,8 +425,10 @@ class SimulatorManager:
             # 4. From Road Surface to Receiver
             if self.simulation_params["include_air_absorption"]:
                 # Attenuation due to air absorption
-                filt_coeffs = self._compute_air_absorption_filter(b, numtaps = 11)
-                sample_eval = filt_coeffs.dot(list(self._read4Buf))
+                filt_coeffs = self._compute_air_absorption_filter(b, numtaps=11)
+                rb = np.array(self._read4Buf[0])
+                # sample_eval = filt_coeffs.dot(rb)
+                sample_eval = np.sum(filt_coeffs * rb[:, np.newaxis], axis=1)
             else:
                 sample_eval = self._read4Buf[0]
             
@@ -713,30 +729,64 @@ class SimulatorManager:
             Rp = (self.Z * np.cos(math.radians(self._theta_vector[i])) - 1.0)/(self.Z * np.cos(math.radians(self._theta_vector[i])) + 1.0) 
         return w_tmp, Rp
 
-    def _get_asphalt_reflection_filter(self, theta: float, dist: float):
+    def _get_asphalt_reflection_filter(self, theta: np.ndarray, dist: np.ndarray):
+        """
+            Computes the asphalt reflection filter for given angles (theta) and distances (dist).
+
+            Parameters
+            ----------
+            theta : np.ndarray
+                Array of incident angles in degrees
+            dist : np.ndarray
+                Array of distances in meters
+
+            Returns
+            -------
+            np.ndarray
+                2D array containing reflection filter coefficients
+            """
         if isinstance(self.road_material, int):
-            # Complex case
-            if np.abs(theta) >= 89:
-                idx = np.where(self._theta_vector == np.sign(theta) * 89)
-            else:
-                idx = np.where(self._theta_vector == round(theta))
-            idx = idx[0][0]
-            
-            w = np.sqrt(-1j * 2.0 * np.pi * self.f_tmp/343.0 * dist * self.w_tmp[idx])
+            idx = np.where(np.abs(theta) >= 89, np.sign(theta) * 89, theta.round().astype(int))
+
+            idx = np.searchsorted(self._theta_vector, idx)
+
+            tmp = np.sqrt(-1j * 2.0 * np.pi * self.f_tmp / 343.0)
+            tmp2 = dist * self.w_tmp[idx]
+            w = np.sqrt(tmp[:, np.newaxis] * tmp2[np.newaxis, :])
             F_w = 1.0 - 1j * np.sqrt(np.pi) * w * scipy.special.erfcx(1j * w)
-            Q = self.Rp + (1.0 - self.Rp) * F_w
-            q = np.fft.irfft(Q)
-            q = q[:40]
+            Q = self.Rp[:, np.newaxis] + (1.0 - self.Rp[:, np.newaxis]) * F_w
+            q = np.fft.irfft(Q, axis=0)
+            q = q.T
+            q = q[:, :40]
             return q
-        
+
         elif isinstance(self.road_material, Material):
-            # Real case
-            if round(theta) == 90:
-                theta = 89
-            if round(theta) == -90:
-                theta = -89
-            idx = np.where(self._theta_vector == round(theta))
-            
-            idx = idx[0][0]
-            
+            theta = np.clip(theta, -89, 89)
+            idx = np.searchsorted(self._theta_vector, theta.round().astype(int))
             return self.realAsphaltReflectionFilterTable[idx]
+        # if isinstance(self.road_material, int):
+        #     # Complex case
+        #     if np.abs(theta) >= 89:
+        #         idx = np.where(self._theta_vector == np.sign(theta) * 89)
+        #     else:
+        #         idx = np.where(self._theta_vector == round(theta))
+        #     idx = idx[0][0]
+        #
+        #     w = np.sqrt(-1j * 2.0 * np.pi * self.f_tmp/343.0 * dist * self.w_tmp[idx])
+        #     F_w = 1.0 - 1j * np.sqrt(np.pi) * w * scipy.special.erfcx(1j * w)
+        #     Q = self.Rp + (1.0 - self.Rp) * F_w
+        #     q = np.fft.irfft(Q)
+        #     q = q[:40]
+        #     return q
+        #
+        # elif isinstance(self.road_material, Material):
+        #     # Real case
+        #     if round(theta) == 90:
+        #         theta = 89
+        #     if round(theta) == -90:
+        #         theta = -89
+        #     idx = np.where(self._theta_vector == round(theta))
+        #
+        #     idx = idx[0][0]
+        #
+        #     return self.realAsphaltReflectionFilterTable[idx]
