@@ -164,6 +164,8 @@ class Environment:
         self._background_noise_flag = False
         self._background_noise_SNR = 0
         self._background_noise = None
+        self._background_noise_index = 0
+        self._background_noise_attenuation = 0
 
         # Instantiate Simulator Manager
         self.manager_array = None
@@ -348,16 +350,17 @@ class Environment:
         
         if signal is None:
             # Define default signal --> white noise
-            simulation_duration = len(self.source.trajectory) / self.fs
-            t = np.arange(0, simulation_duration, 1 / self.fs)
-            signal = np.random.randn(len(t))
-        
-        else:
-            while(len(signal) < len(self.source.trajectory)):
-                signal = np.append(signal, signal)
-            if len(signal) > len(self.source.trajectory):
-                signal = signal[0:len(self.source.trajectory)]
-        
+            signal = np.random.randn(self.source.shape)
+
+        # SNR
+        source_signal = np.array(self.source.signal, dtype=np.int64)
+        signal_power = np.mean(source_signal ** 2)
+        linear_snr = 10 ** (self._background_noise_SNR / 10)
+        noise_power = signal_power / linear_snr
+        noise_signal = np.array(signal, dtype=np.int64)
+        self._background_noise_attenuation = np.sqrt(noise_power / np.mean(noise_signal ** 2))
+        self._background_noise_attenuation = np.clip(self._background_noise_attenuation, 0.0, 1.0)
+
         self._background_noise = signal
 
     def add_microphone_array(self, mic_locs: np.ndarray, mic_orientations: np.ndarray = None, dir_pattern: List[str] = 'omnidirectional') -> None:
@@ -481,17 +484,20 @@ class Environment:
             active_mic_pos_array = np.tile(active_mic_pos, (len(self.source.trajectory), 1))
             signals[m] = self.manager_array[m].update(self.source.trajectory, active_mic_pos_array, current_source_signal)
 
-            # Add background noise
-            if self._background_noise_flag:
-                # Compute attenuation factor from SNR
-                noise_attenuation = np.sqrt(np.sum(signals[m]** 2) / (10 ** (self._background_noise_SNR/10)
-                    * np.sum(self._background_noise ** 2)))
+        # Add background noise
+        if self._background_noise_flag:
+            # Compute background noise signal
+            start = self._background_noise_index * N
+            end = start + N
+            slice_ = np.array([self._background_noise[i % len(self._background_noise)] for i in range(start, end)])
 
-                # Compute background noise signal
-                noise = self._background_noise * noise_attenuation
+            noise = np.array(slice_) * self._background_noise_attenuation
 
-                # Compute signal
-                signals[m] = signals[m] + noise
+            # Compute signal
+            signals = signals + noise
+
+            # Update index
+            self._background_noise_index = (self._background_noise_index + 1) % len(self._background_noise)
         self.source.increase_source_index()
         return signals
     
