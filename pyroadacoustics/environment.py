@@ -347,19 +347,30 @@ class Environment:
 
         self._background_noise_flag = True
         self._background_noise_SNR = SNR
-        
-        if signal is None:
-            # Define default signal --> white noise
-            signal = np.random.randn(self.source.shape)
 
         # SNR
         source_signal = np.array(self.source.signal, dtype=np.int64)
         signal_power = np.mean(source_signal ** 2)
         linear_snr = 10 ** (self._background_noise_SNR / 10)
         noise_power = signal_power / linear_snr
-        noise_signal = np.array(signal, dtype=np.int64)
-        self._background_noise_attenuation = np.sqrt(noise_power / np.mean(noise_signal ** 2))
-        self._background_noise_attenuation = np.clip(self._background_noise_attenuation, 0.0, 1.0)
+
+        if signal is None:
+            # Define default signal --> white noise
+            signal = np.random.randn(len(self.source.signal)) * np.sqrt(noise_power)
+        else:
+            noise_signal = np.array(signal, dtype=np.int64)
+            _background_noise_attenuation = np.sqrt(noise_power / np.mean(noise_signal ** 2))
+            signal = signal * _background_noise_attenuation
+
+        # Scale noise signal to have the desired SNR
+        # if signal.ndim > 1:
+        #     signal = signal.flatten()
+        # signal = signal * np.sqrt(noise_power)
+
+
+        # self._background_noise_attenuation = np.sqrt(noise_power / np.mean(noise_signal ** 2))
+        # self._background_noise_attenuation = np.clip(self._background_noise_attenuation, 0.0, 1.0)
+        self._background_noise_attenuation = 1.0
 
         self._background_noise = signal
 
@@ -491,7 +502,7 @@ class Environment:
             end = start + N
             slice_ = np.array([self._background_noise[i % len(self._background_noise)] for i in range(start, end)])
 
-            noise = np.array(slice_) * self._background_noise_attenuation
+            noise = np.array(slice_)# * self._background_noise_attenuation
 
             # Compute signal
             signals = signals + noise
