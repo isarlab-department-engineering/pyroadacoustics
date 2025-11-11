@@ -400,19 +400,17 @@ class SimulatorManager:
 
             # 2. Asphalt Absorption
             asphalt_filter_coeffs = self._get_asphalt_reflection_filter(-np.degrees(theta) + 90, a+b)
-            
-            # sample_eval = asphalt_filter_coeffs.dot(list(self._read3Buf))
-            rb = np.array(self._read3Buf)
-            rb1 = np.concatenate([self._read3Buf[0], self._read3Buf[1]])
-            rb2 = np.lib.stride_tricks.as_strided(
-            np.tile(rb1, 40),
-            shape=(40, len(rb1)),
-            strides=(rb1.itemsize, rb1.itemsize)
-            )
-            rb3 = rb2[:, :400]
-            sample_eval = asphalt_filter_coeffs.dot(rb3)
-            sample_eval = sample_eval.diagonal()
-            # sample_eval = np.sum(asphalt_filter_coeffs * rb[:, np.newaxis], axis=1)
+
+            # Vectorized per-sample FIR with time-varying coefficients.
+            # self._read3Buf contains the last ntaps arrays, each of length N (chunk size).
+            # Let rb have shape (ntaps, N). For each time i, we want
+            #   y[i] = sum_k b[i, k] * x_k[i]
+            # which is the diagonal of (B @ X) but can be computed efficiently as
+            # an element-wise product followed by a sum over taps.
+            rb = np.array(self._read3Buf)              # (ntaps, N)
+            rb_T = rb.T                                 # (N, ntaps)
+            # asphalt_filter_coeffs shape: (N, ntaps)
+            sample_eval = np.sum(asphalt_filter_coeffs * rb_T, axis=1)  # (N,)
             
             
             # 3. Second path in air --> Secondary Delay Line
